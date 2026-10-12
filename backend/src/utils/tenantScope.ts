@@ -76,3 +76,4 @@ export function assertTenantAccess<T extends { organizationId?: string | null; c
 
   return record;
 }
+

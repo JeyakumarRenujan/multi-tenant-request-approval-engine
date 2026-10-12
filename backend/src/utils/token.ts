@@ -44,3 +44,4 @@ export function generateRefreshToken(): { token: string; expiresAt: Date } {
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
+

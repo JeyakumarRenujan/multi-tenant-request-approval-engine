@@ -14,3 +14,4 @@ export const config = {
     refreshExpiresDays: 7,
   },
 };
+
