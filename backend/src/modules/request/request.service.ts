@@ -307,46 +307,80 @@ export class RequestService {
     }
 
     const dataToUpdate: any = {};
+    const changedFields: string[] = [];
 
-    if (input.title !== undefined) dataToUpdate.title = input.title.trim();
-    if (input.description !== undefined) dataToUpdate.description = input.description.trim();
-    if (input.category !== undefined) dataToUpdate.category = input.category;
-    if (input.priority !== undefined) dataToUpdate.priority = input.priority;
+    if (input.title !== undefined) {
+      dataToUpdate.title = input.title.trim();
+      changedFields.push('title');
+    }
+    if (input.description !== undefined) {
+      dataToUpdate.description = input.description.trim();
+      changedFields.push('description');
+    }
+    if (input.category !== undefined) {
+      dataToUpdate.category = input.category;
+      changedFields.push('category');
+    }
+    if (input.priority !== undefined) {
+      dataToUpdate.priority = input.priority;
+      changedFields.push('priority');
+    }
     if (input.dueDate !== undefined) {
       dataToUpdate.dueDate = input.dueDate ? new Date(input.dueDate) : null;
+      changedFields.push('dueDate');
     }
 
     // Optimistic locking: use expectedVersion if supplied, otherwise current version
     const versionToMatch = input.expectedVersion !== undefined ? input.expectedVersion : request.version;
 
-    const updateResult = await prisma.request.updateMany({
-      where: {
-        id: requestId,
-        organizationId,
-        version: versionToMatch,
-        status: RequestStatus.DRAFT,
-        ownerId: user.id,
-      },
-      data: {
-        ...dataToUpdate,
-        version: { increment: 1 },
-      },
-    });
-
-    if (updateResult.count === 0) {
-      throw new ConflictError('Concurrent modification detected or version mismatch', {
-        expectedVersion: versionToMatch,
-        currentVersion: request.version,
+    // Execute update and audit log creation atomically inside a single transaction
+    const updated = await prisma.$transaction(async (tx) => {
+      const updateResult = await tx.request.updateMany({
+        where: {
+          id: requestId,
+          organizationId,
+          version: versionToMatch,
+          status: RequestStatus.DRAFT,
+          ownerId: user.id,
+        },
+        data: {
+          ...dataToUpdate,
+          version: { increment: 1 },
+        },
       });
-    }
 
-    const updated = await prisma.request.findUniqueOrThrow({
-      where: { id: requestId },
-      include: {
-        client: { select: { id: true, name: true } },
-        owner: { select: { id: true, name: true, email: true } },
-        assignee: { select: { id: true, name: true, email: true } },
-      },
+      if (updateResult.count === 0) {
+        throw new ConflictError('Concurrent modification detected or version mismatch', {
+          expectedVersion: versionToMatch,
+          currentVersion: request.version,
+        });
+      }
+
+      // Record ActivityLog row with event UPDATED and changed fields inside transaction
+      if (changedFields.length > 0) {
+        await tx.activityLog.create({
+          data: {
+            organizationId,
+            requestId: request.id,
+            actorId: user.id,
+            event: 'UPDATED',
+            previousStatus: request.status,
+            newStatus: request.status,
+            metadata: {
+              changedFields,
+            },
+          },
+        });
+      }
+
+      return tx.request.findUniqueOrThrow({
+        where: { id: requestId },
+        include: {
+          client: { select: { id: true, name: true } },
+          owner: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
     });
 
     return updated;
@@ -419,50 +453,53 @@ export class RequestService {
     // Optimistic locking: use expectedVersion if supplied, otherwise current version
     const versionToMatch = expectedVersion !== undefined ? expectedVersion : request.version;
 
-    const updateResult = await prisma.request.updateMany({
-      where: {
-        id: requestId,
-        organizationId,
-        version: versionToMatch,
-        status: { in: allowedAssignmentStatuses },
-      },
-      data: {
-        assigneeId: developer.id,
-        version: { increment: 1 },
-      },
-    });
-
-    if (updateResult.count === 0) {
-      throw new ConflictError('Concurrent modification detected or version mismatch', {
-        expectedVersion: versionToMatch,
-        currentVersion: request.version,
-      });
-    }
-
-    const updated = await prisma.request.findUniqueOrThrow({
-      where: { id: requestId },
-      include: {
-        client: { select: { id: true, name: true } },
-        owner: { select: { id: true, name: true, email: true } },
-        assignee: { select: { id: true, name: true, email: true } },
-      },
-    });
-
-    // Log the assignment event in ActivityLog
-    await prisma.activityLog.create({
-      data: {
-        organizationId,
-        requestId: request.id,
-        actorId: user.id,
-        event: 'ASSIGNED',
-        previousStatus: request.status,
-        newStatus: request.status,
-        metadata: {
-          assigneeId: developer.id,
-          assigneeName: developer.name,
-          version: updated.version,
+    // Execute assignment update and ASSIGNED ActivityLog insert atomically inside a single transaction
+    const updated = await prisma.$transaction(async (tx) => {
+      const updateResult = await tx.request.updateMany({
+        where: {
+          id: requestId,
+          organizationId,
+          version: versionToMatch,
+          status: { in: allowedAssignmentStatuses },
         },
-      },
+        data: {
+          assigneeId: developer.id,
+          version: { increment: 1 },
+        },
+      });
+
+      if (updateResult.count === 0) {
+        throw new ConflictError('Concurrent modification detected or version mismatch', {
+          expectedVersion: versionToMatch,
+          currentVersion: request.version,
+        });
+      }
+
+      // Log the assignment event in ActivityLog atomically in the same transaction
+      await tx.activityLog.create({
+        data: {
+          organizationId,
+          requestId: request.id,
+          actorId: user.id,
+          event: 'ASSIGNED',
+          previousStatus: request.status,
+          newStatus: request.status,
+          metadata: {
+            assigneeId: developer.id,
+            assigneeName: developer.name,
+            version: versionToMatch + 1,
+          },
+        },
+      });
+
+      return tx.request.findUniqueOrThrow({
+        where: { id: requestId },
+        include: {
+          client: { select: { id: true, name: true } },
+          owner: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
     });
 
     return updated;

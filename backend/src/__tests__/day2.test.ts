@@ -572,6 +572,17 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions, Optimistic Locking & Valid
 
       expect(creatorEditRes.status).toBe(200);
       expect(creatorEditRes.body.request.title).toBe('Creator Updated Title');
+
+      // Verify ActivityLog was created atomically inside transaction with changedFields
+      const updateLog = await prisma.activityLog.findFirst({
+        where: {
+          requestId: reqClient1Id,
+          event: 'UPDATED',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(updateLog).not.toBeNull();
+      expect((updateLog?.metadata as any).changedFields).toEqual(['title']);
     });
   });
 
@@ -647,6 +658,16 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions, Optimistic Locking & Valid
       expect(res.status).toBe(200);
       expect(res.body.request.assigneeId).toBe(orgADevId);
       expect(res.body.request.version).toBe(2);
+
+      // Verify ActivityLog was created atomically inside transaction with ASSIGNED event
+      const assignLog = await prisma.activityLog.findFirst({
+        where: {
+          requestId: submittedReq.id,
+          event: 'ASSIGNED',
+        },
+      });
+      expect(assignLog).not.toBeNull();
+      expect((assignLog?.metadata as any).assigneeId).toBe(orgADevId);
     });
 
     it('PATCH /requests/:id with mismatched expectedVersion returns 409 CONFLICT', async () => {
