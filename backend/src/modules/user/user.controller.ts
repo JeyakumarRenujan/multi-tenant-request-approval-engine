@@ -29,6 +29,15 @@ export class UserController {
       next(error);
     }
   }
+
+  async getAssignable(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const developers = await userService.getAssignableDevelopers(req.user!);
+      res.status(200).json({ developers, users: developers });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const userController = new UserController();

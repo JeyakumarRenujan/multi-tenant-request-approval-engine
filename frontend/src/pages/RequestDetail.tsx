@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import { useAuth } from '../context/useAuth';
-import type { ActivityLog, RequestItem, RequestStatus, User } from '../types';
+import type { ActivityLog, RequestItem, RequestStatus } from '../types';
 import { HistoryTimeline } from '../components/HistoryTimeline';
 import { RejectModal } from '../components/RejectModal';
 import {
@@ -39,7 +39,7 @@ export const RequestDetail: React.FC = () => {
 
   const [request, setRequest] = useState<RequestItem | null>(null);
   const [history, setHistory] = useState<ActivityLog[]>([]);
-  const [developers, setDevelopers] = useState<User[]>([]);
+  const [developers, setDevelopers] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +81,7 @@ export const RequestDetail: React.FC = () => {
     };
   }, [id, refreshTrigger]);
 
-  // If user is MANAGER and status is assignable, load active developers
+  // If user is MANAGER and status is assignable, load active developers via /users/assignable
   useEffect(() => {
     if (!user || user.role !== 'MANAGER' || !request) return;
     const assignableStatuses: RequestStatus[] = [
@@ -92,8 +92,8 @@ export const RequestDetail: React.FC = () => {
     ];
     if (assignableStatuses.includes(request.status)) {
       api
-        .getUsers({ role: 'DEVELOPER', isActive: true })
-        .then((res) => setDevelopers(res.users))
+        .getAssignableDevelopers()
+        .then((res) => setDevelopers(res.developers || (res as any).users || []))
         .catch(() => {});
     }
   }, [user, request]);
@@ -503,7 +503,7 @@ export const RequestDetail: React.FC = () => {
                   <option value="">Select a Developer...</option>
                   {developers.map((dev) => (
                     <option key={dev.id} value={dev.id}>
-                      {dev.name} ({dev.email})
+                      {dev.name}
                     </option>
                   ))}
                 </select>
@@ -540,3 +540,4 @@ export const RequestDetail: React.FC = () => {
     </div>
   );
 };
+

@@ -497,6 +497,37 @@ export const swaggerDocument = {
         },
       },
     },
+    '/users/assignable': {
+      get: {
+        summary: 'List active developers in caller organization available for assignment (MANAGER and ORG_ADMIN only)',
+        responses: {
+          200: {
+            description: 'List of assignable active developers returning only { id, name }',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    developers: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'string', format: 'uuid' },
+                          name: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: { $ref: '#/components/responses/Unauthorized' },
+          403: { $ref: '#/components/responses/Forbidden' },
+        },
+      },
+    },
     '/users': {
       post: {
         summary: 'Create tenant user (ORG_ADMIN only)',

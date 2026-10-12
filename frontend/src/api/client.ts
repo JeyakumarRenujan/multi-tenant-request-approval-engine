@@ -283,6 +283,9 @@ export const api = {
     return apiFetch<{ users: User[] }>(`/users${qs ? `?${qs}` : ''}`);
   },
 
+  getAssignableDevelopers: () =>
+    apiFetch<{ developers: { id: string; name: string }[] }>('/users/assignable'),
+
   createUser: (data: {
     name: string;
     email: string;
@@ -325,3 +328,4 @@ export const api = {
       body: JSON.stringify(data),
     }),
 };
+

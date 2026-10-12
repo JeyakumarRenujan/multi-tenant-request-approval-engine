@@ -189,6 +189,23 @@ export class UserService {
       },
     });
   }
+
+  async getAssignableDevelopers(caller: AuthenticatedUser) {
+    const organizationId = caller.organizationId!;
+
+    return prisma.user.findMany({
+      where: {
+        organizationId,
+        role: Role.DEVELOPER,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
 }
 
 export const userService = new UserService();

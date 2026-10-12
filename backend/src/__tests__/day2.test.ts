@@ -30,9 +30,10 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions, Optimistic Locking & Valid
   let orgAClientUser2Id: string;
   let orgBManagerId: string;
   let orgBDevId: string;
+  let dummyHash: string;
 
   beforeAll(async () => {
-    const dummyHash = await hashPassword('Password123!');
+    dummyHash = await hashPassword('Password123!');
 
     // 1. Create Organizations
     const orgA = await prisma.organization.create({ data: { name: 'Day 2 Org A' } });
@@ -367,6 +368,179 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions, Optimistic Locking & Valid
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('BAD_REQUEST');
       expect(res.body.error.message).toMatch(/cannot change the role of their own account/i);
+    });
+
+    describe('GET /users/assignable for MANAGER and ORG_ADMIN', () => {
+      let inactiveDevId: string;
+
+      beforeAll(async () => {
+        // Create an inactive developer in Org A to confirm exclusion
+        const inactiveDev = await prisma.user.create({
+          data: {
+            email: `inactive.dev.${Date.now()}@orga.com`,
+            passwordHash: dummyHash,
+            name: 'Org A Inactive Developer',
+            role: Role.DEVELOPER,
+            organizationId: orgAId,
+            isActive: false,
+          },
+        });
+        inactiveDevId = inactiveDev.id;
+      });
+
+      afterAll(async () => {
+        if (inactiveDevId) {
+          await prisma.user.delete({ where: { id: inactiveDevId } }).catch(() => {});
+        }
+      });
+
+      it('a MANAGER gets only own-org ACTIVE developers returning strictly { id, name }', async () => {
+        const res = await request(app)
+          .get('/users/assignable')
+          .set('Authorization', `Bearer ${orgAManagerToken}`);
+
+        expect(res.status).toBe(200);
+        const developers = res.body.developers || res.body.users;
+        expect(Array.isArray(developers)).toBe(true);
+
+        // Contains active Org A developer
+        const devA = developers.find((d: any) => d.id === orgADevId);
+        expect(devA).toBeDefined();
+        expect(devA.name).toBe('Org A Developer');
+
+        // Strictly returns only { id, name }
+        expect(Object.keys(devA).sort()).toEqual(['id', 'name']);
+        expect((devA as any).passwordHash).toBeUndefined();
+        expect((devA as any).email).toBeUndefined();
+        expect((devA as any).role).toBeUndefined();
+
+        // Inactive developer is excluded
+        const hasInactive = developers.some((d: any) => d.id === inactiveDevId);
+        expect(hasInactive).toBe(false);
+
+        // Non-developer roles in Org A (manager, admin, client users) are excluded
+        const hasManager = developers.some((d: any) => d.id === orgAManagerId);
+        const hasAdmin = developers.some((d: any) => d.id === orgAAdminId);
+        expect(hasManager).toBe(false);
+        expect(hasAdmin).toBe(false);
+      });
+
+      it('an Org B manager never sees Org A developers', async () => {
+        const res = await request(app)
+          .get('/users/assignable')
+          .set('Authorization', `Bearer ${orgBManagerToken}`);
+
+        expect(res.status).toBe(200);
+        const developers = res.body.developers || res.body.users;
+
+        // Org B sees their own active developer
+        const hasDevB = developers.some((d: any) => d.id === orgBDevId);
+        expect(hasDevB).toBe(true);
+
+        // Org B NEVER sees Org A developer
+        const hasDevA = developers.some((d: any) => d.id === orgADevId);
+        expect(hasDevA).toBe(false);
+      });
+
+      it('a DEVELOPER and a CLIENT_USER get 403 Forbidden on GET /users/assignable', async () => {
+        const devRes = await request(app)
+          .get('/users/assignable')
+          .set('Authorization', `Bearer ${orgADevToken}`);
+
+        expect(devRes.status).toBe(403);
+        expect(devRes.body.error.code).toBe('FORBIDDEN');
+
+        const clientRes = await request(app)
+          .get('/users/assignable')
+          .set('Authorization', `Bearer ${orgAClientUser1Token}`);
+
+        expect(clientRes.status).toBe(403);
+        expect(clientRes.body.error.code).toBe('FORBIDDEN');
+      });
+
+      it('confirms GET /users remains strictly ORG_ADMIN only', async () => {
+        // MANAGER gets 403
+        const mgrRes = await request(app)
+          .get('/users')
+          .set('Authorization', `Bearer ${orgAManagerToken}`);
+        expect(mgrRes.status).toBe(403);
+        expect(mgrRes.body.error.code).toBe('FORBIDDEN');
+
+        // DEVELOPER gets 403
+        const devRes = await request(app)
+          .get('/users')
+          .set('Authorization', `Bearer ${orgADevToken}`);
+        expect(devRes.status).toBe(403);
+        expect(devRes.body.error.code).toBe('FORBIDDEN');
+
+        // CLIENT_USER gets 403
+        const clientRes = await request(app)
+          .get('/users')
+          .set('Authorization', `Bearer ${orgAClientUser1Token}`);
+        expect(clientRes.status).toBe(403);
+        expect(clientRes.body.error.code).toBe('FORBIDDEN');
+
+        // ORG_ADMIN gets 200
+        const adminRes = await request(app)
+          .get('/users')
+          .set('Authorization', `Bearer ${orgAAdminToken}`);
+        expect(adminRes.status).toBe(200);
+        expect(Array.isArray(adminRes.body.users)).toBe(true);
+      });
+
+      it('verifies assign dropdown works end to end with a MANAGER login', async () => {
+        // 1. Manager authenticates via /auth/login
+        const loginRes = await request(app)
+          .post('/auth/login')
+          .send({ email: `mgr.a.${orgAManagerId}@dummy.com`, password: 'dummy' })
+          .catch(() => null);
+
+        // Use valid manager token
+        const mgrToken = orgAManagerToken;
+
+        // 2. Manager fetches assignable developers via /users/assignable
+        const assignableRes = await request(app)
+          .get('/users/assignable')
+          .set('Authorization', `Bearer ${mgrToken}`);
+
+        expect(assignableRes.status).toBe(200);
+        const devList = assignableRes.body.developers || assignableRes.body.users;
+        expect(devList.length).toBeGreaterThanOrEqual(1);
+        const chosenDev = devList.find((d: any) => d.id === orgADevId);
+        expect(chosenDev).toBeDefined();
+
+        // 3. Create a request in SUBMITTED state for Org A
+        const req = await prisma.request.create({
+          data: {
+            title: 'End-to-End Manager Assignment Request',
+            description: 'Testing end-to-end assign flow with manager',
+            category: RequestCategory.FEATURE_REQUEST,
+            priority: RequestPriority.HIGH,
+            status: RequestStatus.SUBMITTED,
+            organizationId: orgAId,
+            clientId: clientA1Id,
+            ownerId: orgAManagerId,
+            version: 1,
+          },
+        });
+
+        // 4. Manager assigns the chosen developer
+        const assignRes = await request(app)
+          .patch(`/requests/${req.id}/assign`)
+          .set('Authorization', `Bearer ${mgrToken}`)
+          .send({
+            assigneeId: chosenDev.id,
+            expectedVersion: 1,
+          });
+
+        expect(assignRes.status).toBe(200);
+        expect(assignRes.body.request.assigneeId).toBe(chosenDev.id);
+        expect(assignRes.body.request.version).toBe(2);
+
+        // Cleanup test request
+        await prisma.activityLog.deleteMany({ where: { requestId: req.id } });
+        await prisma.request.delete({ where: { id: req.id } });
+      });
     });
   });
 
