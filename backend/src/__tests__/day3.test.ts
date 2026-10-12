@@ -968,4 +968,166 @@ describe('Day 3: Approval Workflow, State Machine, Concurrency & Audit History T
       expect([404, 405]).toContain(deleteRes.status);
     });
   });
+
+  describe('9. Day 3 Edge-Case Hardening Tests', () => {
+    it('concurrent race: one approval and one assignment on same expectedVersion; exactly one succeeds, the other gets 409 CONFLICT', async () => {
+      const req = await prisma.request.create({
+        data: {
+          title: 'Race Approval vs Assignment Request',
+          description: 'Testing race between transition and assignment',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.HIGH,
+          status: RequestStatus.UNDER_REVIEW,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 1,
+        },
+      });
+
+      // Both operations are valid for MANAGER on UNDER_REVIEW status with expectedVersion: 1
+      const [resApproval, resAssign] = await Promise.all([
+        request(app)
+          .post(`/requests/${req.id}/transition`)
+          .set('Authorization', `Bearer ${orgAManagerToken}`)
+          .send({
+            toStatus: RequestStatus.APPROVED,
+            expectedVersion: 1,
+          }),
+        request(app)
+          .patch(`/requests/${req.id}/assign`)
+          .set('Authorization', `Bearer ${orgAManagerToken}`)
+          .send({
+            assigneeId: orgADev1Id,
+            expectedVersion: 1,
+          }),
+      ]);
+
+      const statuses = [resApproval.status, resAssign.status];
+      expect(statuses).toContain(200);
+      expect(statuses).toContain(409);
+
+      const conflictRes = resApproval.status === 409 ? resApproval : resAssign;
+      expect(conflictRes.body.error.code).toBe('CONFLICT');
+
+      // The final version is incremented exactly once (from 1 to 2)
+      const freshReq = await prisma.request.findUniqueOrThrow({
+        where: { id: req.id },
+      });
+      expect(freshReq.version).toBe(2);
+    });
+
+    it('a DEVELOPER assigned to a COMPLETED request can still read its history and detail', async () => {
+      const completedReq = await prisma.request.create({
+        data: {
+          title: 'Completed Request for Dev Read Check',
+          description: 'Developer reading completed request',
+          category: RequestCategory.BUG_FIX,
+          priority: RequestPriority.MEDIUM,
+          status: RequestStatus.COMPLETED,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          assigneeId: orgADev1Id,
+          version: 5,
+        },
+      });
+
+      await prisma.activityLog.create({
+        data: {
+          organizationId: orgAId,
+          requestId: completedReq.id,
+          actorId: orgADev1Id,
+          event: 'STATUS_CHANGED',
+          previousStatus: RequestStatus.IN_PROGRESS,
+          newStatus: RequestStatus.COMPLETED,
+          metadata: { note: 'Finished implementation' },
+        },
+      });
+
+      // Detail access: GET /requests/:id by assigned developer
+      const detailRes = await request(app)
+        .get(`/requests/${completedReq.id}`)
+        .set('Authorization', `Bearer ${orgADev1Token}`);
+
+      expect(detailRes.status).toBe(200);
+      expect(detailRes.body.request.id).toBe(completedReq.id);
+      expect(detailRes.body.request.status).toBe(RequestStatus.COMPLETED);
+      expect(detailRes.body.request.assigneeId).toBe(orgADev1Id);
+
+      // History access: GET /requests/:id/history by assigned developer
+      const historyRes = await request(app)
+        .get(`/requests/${completedReq.id}/history`)
+        .set('Authorization', `Bearer ${orgADev1Token}`);
+
+      expect(historyRes.status).toBe(200);
+      expect(Array.isArray(historyRes.body.history)).toBe(true);
+      expect(historyRes.body.history.length).toBeGreaterThanOrEqual(1);
+      expect(historyRes.body.history[0].event).toBe('STATUS_CHANGED');
+    });
+
+    it('a reason sent with a non-REJECTED transition never writes to rejectionReason', async () => {
+      const req = await prisma.request.create({
+        data: {
+          title: 'Approval with Remark Request',
+          description: 'Testing non-rejected transition with reason',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.MEDIUM,
+          status: RequestStatus.UNDER_REVIEW,
+          rejectionReason: null,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 1,
+        },
+      });
+
+      // Manager approves request while passing a comment/reason
+      const res = await request(app)
+        .post(`/requests/${req.id}/transition`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({
+          toStatus: RequestStatus.APPROVED,
+          expectedVersion: 1,
+          reason: 'Looks great! Approved for the next sprint.',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.request.status).toBe(RequestStatus.APPROVED);
+      expect(res.body.request.rejectionReason).toBeNull();
+
+      // Confirm directly in database that rejectionReason was not written
+      const freshReq = await prisma.request.findUniqueOrThrow({
+        where: { id: req.id },
+      });
+      expect(freshReq.rejectionReason).toBeNull();
+    });
+
+    it('GET /requests/:id returns rejectionReason to the owning CLIENT_USER', async () => {
+      const rejectedReasonText = 'Scope cannot be accommodated in Q4 roadmap due to resource constraints';
+      const rejectedReq = await prisma.request.create({
+        data: {
+          title: 'Client Rejected Request View Test',
+          description: 'Client viewing rejection reason',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.HIGH,
+          status: RequestStatus.REJECTED,
+          rejectionReason: rejectedReasonText,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 2,
+        },
+      });
+
+      const res = await request(app)
+        .get(`/requests/${rejectedReq.id}`)
+        .set('Authorization', `Bearer ${orgAClientUser1Token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.request.id).toBe(rejectedReq.id);
+      expect(res.body.request.status).toBe(RequestStatus.REJECTED);
+      expect(res.body.request.rejectionReason).toBe(rejectedReasonText);
+    });
+  });
 });

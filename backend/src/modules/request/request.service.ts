@@ -333,7 +333,14 @@ export class RequestService {
       changedFields.push('dueDate');
     }
 
-    // Optimistic locking: use expectedVersion if supplied, otherwise current version
+    // Optimistic locking: check expectedVersion if supplied
+    if (input.expectedVersion !== undefined && request.version !== input.expectedVersion) {
+      throw new ConflictError('Concurrent modification detected or version mismatch', {
+        expectedVersion: input.expectedVersion,
+        currentVersion: request.version,
+      });
+    }
+
     const versionToMatch = input.expectedVersion !== undefined ? input.expectedVersion : request.version;
 
     // Execute update and audit log creation atomically inside a single transaction
@@ -453,7 +460,14 @@ export class RequestService {
       throw new BadRequestError('Assignee is deactivated');
     }
 
-    // Optimistic locking: use expectedVersion if supplied, otherwise current version
+    // Optimistic locking: check expectedVersion if supplied
+    if (expectedVersion !== undefined && request.version !== expectedVersion) {
+      throw new ConflictError('Concurrent modification detected or version mismatch', {
+        expectedVersion,
+        currentVersion: request.version,
+      });
+    }
+
     const versionToMatch = expectedVersion !== undefined ? expectedVersion : request.version;
 
     // Execute assignment update and ASSIGNED ActivityLog insert atomically inside a single transaction

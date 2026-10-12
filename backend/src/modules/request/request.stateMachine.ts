@@ -218,3 +218,4 @@ export function assertTransitionAllowed(
     throw new ForbiddenError(result.denialReason);
   }
 }
+
