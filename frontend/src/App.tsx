@@ -9,6 +9,9 @@ import { Dashboard } from './pages/Dashboard';
 import { RequestList } from './pages/RequestList';
 import { CreateRequest } from './pages/CreateRequest';
 import { RequestDetail } from './pages/RequestDetail';
+import { ClientsPage } from './pages/ClientsPage';
+import { UsersPage } from './pages/UsersPage';
+import { OrganizationsPage } from './pages/OrganizationsPage';
 
 const HomeRedirect: React.FC = () => {
   const { user } = useAuth();
@@ -17,14 +20,6 @@ const HomeRedirect: React.FC = () => {
   }
   return <Navigate to="/dashboard" replace />;
 };
-
-// Temporary placeholder until step implementation
-const PlaceholderPage: React.FC<{ title: string }> = ({ title }) => (
-  <div className="p-8 text-center bg-white rounded-xl border border-slate-200">
-    <h2 className="text-xl font-bold text-slate-800">{title}</h2>
-    <p className="mt-2 text-sm text-slate-500">Feature implementation in progress.</p>
-  </div>
-);
 
 export function App() {
   return (
@@ -41,9 +36,9 @@ export function App() {
               <Route path="/requests" element={<RequestList />} />
               <Route path="/requests/new" element={<CreateRequest />} />
               <Route path="/requests/:id" element={<RequestDetail />} />
-              <Route path="/clients" element={<PlaceholderPage title="Clients" />} />
-              <Route path="/users" element={<PlaceholderPage title="Users" />} />
-              <Route path="/organizations" element={<PlaceholderPage title="Organizations" />} />
+              <Route path="/clients" element={<ClientsPage />} />
+              <Route path="/users" element={<UsersPage />} />
+              <Route path="/organizations" element={<OrganizationsPage />} />
             </Route>
           </Route>
 
