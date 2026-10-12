@@ -6,3 +6,162 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+enum Role {
+  PLATFORM_ADMIN
+  ORG_ADMIN
+  MANAGER
+  DEVELOPER
+  CLIENT_USER
+}
+
+enum RequestCategory {
+  FEATURE_REQUEST
+  BUG_FIX
+  ACCESS_REQUEST
+  SUPPORT
+  GENERAL
+}
+
+enum RequestPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum RequestStatus {
+  DRAFT
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  IN_PROGRESS
+  COMPLETED
+  REJECTED
+  CANCELLED
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  // Relationships
+  clients      Client[]
+  users        User[]
+  requests     Request[]
+  activityLogs ActivityLog[]
+
+  @@map("organizations")
+}
+
+model Client {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  // Relationships
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users        User[]
+  requests     Request[]
+
+  @@index([organizationId])
+  @@map("clients")
+}
+
+model User {
+  id             String    @id @default(uuid())
+  organizationId String?
+  clientId       String?
+  email          String    @unique
+  passwordHash   String
+  name           String
+  role           Role
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Relationships
+  organization     Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client           Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  ownedRequests    Request[]      @relation("RequestOwner")
+  assignedRequests Request[]      @relation("RequestAssignee")
+  activityLogs     ActivityLog[]  @relation("Actor")
+  refreshTokens    RefreshToken[]
+
+  @@index([organizationId])
+  @@index([clientId])
+  @@map("users")
+}
+
+model Request {
+  id              String          @id @default(uuid())
+  organizationId  String
+  clientId        String
+  title           String
+  description     String
+  category        RequestCategory
+  priority        RequestPriority
+  ownerId         String
+  assigneeId      String?
+  dueDate         DateTime?
+  status          RequestStatus   @default(PENDING)
+  rejectionReason String?
+  version         Int             @default(1)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relationships
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  owner        User          @relation("RequestOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  assignee     User?         @relation("RequestAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  activityLogs ActivityLog[]
+
+  // Performance and multi-tenant scoping indexes
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, clientId])
+  @@index([assigneeId])
+  @@index([dueDate])
+  @@map("requests")
+}
+
+model ActivityLog {
+  id             String         @id @default(uuid())
+  organizationId String
+  requestId      String
+  actorId        String
+  event          String
+  previousStatus RequestStatus?
+  newStatus      RequestStatus?
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+
+  // Relationships
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  request      Request      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  actor        User         @relation("Actor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([requestId])
+  @@index([actorId])
+  @@map("activity_logs")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  // Relationships
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
