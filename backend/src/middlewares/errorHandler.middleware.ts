@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Prisma } from '@prisma/client';
+import { ZodError } from 'zod';
 import { AppError } from '../errors/AppError';
 
 /**
@@ -19,6 +20,22 @@ export function errorHandler(
         code: err.code,
         message: err.message,
         details: err.details,
+      },
+    });
+  }
+
+  // Zod schema validation errors
+  if (err instanceof ZodError) {
+    const details = err.issues.map((issue) => ({
+      field: issue.path.join('.'),
+      message: issue.message,
+      rule: issue.code,
+    }));
+    return res.status(400).json({
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'Validation error',
+        details,
       },
     });
   }
