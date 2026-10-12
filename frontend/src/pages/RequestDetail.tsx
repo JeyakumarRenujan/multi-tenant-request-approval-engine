@@ -4,6 +4,7 @@ import { api, ApiError } from '../api/client';
 import { useAuth } from '../context/useAuth';
 import type { ActivityLog, RequestItem, RequestStatus, User } from '../types';
 import { HistoryTimeline } from '../components/HistoryTimeline';
+import { RejectModal } from '../components/RejectModal';
 import {
   ArrowLeft,
   Clock,
@@ -15,6 +16,11 @@ import {
   Layers,
   RefreshCw,
   XCircle,
+  Send,
+  Eye,
+  Check,
+  Play,
+  CheckCircle2,
 } from 'lucide-react';
 
 const statusBadgeStyles: Record<RequestStatus, string> = {
@@ -42,6 +48,11 @@ export const RequestDetail: React.FC = () => {
   // Assignment state
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string>('');
   const [assigning, setAssigning] = useState<boolean>(false);
+
+  // Transition & Modal state
+  const [transitioning, setTransitioning] = useState<boolean>(false);
+  const [rejectModalOpen, setRejectModalOpen] = useState<boolean>(false);
+
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
 
   // Load Request and History
@@ -94,6 +105,38 @@ export const RequestDetail: React.FC = () => {
     setRefreshTrigger((prev) => prev + 1);
   };
 
+  // State Machine Approval Workflow Actions
+  const handleTransition = async (toStatus: RequestStatus, reason?: string) => {
+    if (!request || transitioning) return;
+    setTransitioning(true);
+    setActionError(null);
+
+    try {
+      // Rule: Always send expectedVersion from the loaded request
+      const res = await api.transitionRequest(request.id, {
+        toStatus,
+        expectedVersion: request.version,
+        reason,
+      });
+
+      setRequest(res.request);
+      setHistoryLoading(true);
+      const hist = await api.getRequestHistory(request.id);
+      setHistory(hist.history || []);
+    } catch (err: any) {
+      if (err instanceof ApiError && err.code === 'CONFLICT') {
+        setActionError('This request was changed by someone else. Reloading latest state...');
+        setTimeout(() => reloadData(), 1200);
+      } else {
+        setActionError(err.message || `Failed to transition request to ${toStatus}.`);
+      }
+      throw err;
+    } finally {
+      setTransitioning(false);
+      setHistoryLoading(false);
+    }
+  };
+
   const handleAssignDeveloper = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!request || !selectedAssigneeId || assigning) return;
@@ -104,7 +147,6 @@ export const RequestDetail: React.FC = () => {
     try {
       const res = await api.assignRequest(request.id, selectedAssigneeId, request.version);
       setRequest(res.request);
-      // Reload history to reflect assignment event
       setHistoryLoading(true);
       const hist = await api.getRequestHistory(request.id);
       setHistory(hist.history || []);
@@ -165,6 +207,34 @@ export const RequestDetail: React.FC = () => {
     );
   }
 
+  // State machine permission checks based on current role and status
+  const canSubmitDraft =
+    request.status === 'DRAFT' &&
+    user?.role === 'CLIENT_USER' &&
+    request.ownerId === user?.id;
+
+  const canStartReview =
+    request.status === 'SUBMITTED' && user?.role === 'MANAGER';
+
+  const canApprove =
+    request.status === 'UNDER_REVIEW' && user?.role === 'MANAGER';
+
+  const canReject =
+    request.status === 'UNDER_REVIEW' && user?.role === 'MANAGER';
+
+  const canStartWork =
+    request.status === 'APPROVED' &&
+    user?.role === 'DEVELOPER' &&
+    request.assigneeId === user?.id;
+
+  const canComplete =
+    request.status === 'IN_PROGRESS' &&
+    user?.role === 'DEVELOPER' &&
+    request.assigneeId === user?.id;
+
+  const hasAnyWorkflowAction =
+    canSubmitDraft || canStartReview || canApprove || canReject || canStartWork || canComplete;
+
   const isAssignableStatus =
     ['SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'IN_PROGRESS'].includes(request.status);
 
@@ -190,7 +260,7 @@ export const RequestDetail: React.FC = () => {
 
       {/* Action error banner */}
       {actionError && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start gap-3 animate-shake">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start gap-3">
           <AlertTriangle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
           <div className="text-sm text-red-700 font-medium">{actionError}</div>
         </div>
@@ -253,6 +323,94 @@ export const RequestDetail: React.FC = () => {
             Version: v{request.version}
           </div>
         </div>
+
+        {/* Workflow Approval Action Bar (Buttons shown only when state machine allows) */}
+        {hasAnyWorkflowAction && (
+          <div className="p-4 bg-indigo-50/70 border border-indigo-100 rounded-xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <span className="text-xs font-bold text-indigo-900 uppercase tracking-wider">
+                Workflow Actions Available
+              </span>
+              <p className="text-xs text-indigo-700 mt-0.5">
+                Current State: <strong className="font-semibold">{request.status}</strong>
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* DRAFT -> SUBMITTED (CLIENT_USER Owner) */}
+              {canSubmitDraft && (
+                <button
+                  onClick={() => handleTransition('SUBMITTED')}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  <span>Submit for Review</span>
+                </button>
+              )}
+
+              {/* SUBMITTED -> UNDER_REVIEW (MANAGER) */}
+              {canStartReview && (
+                <button
+                  onClick={() => handleTransition('UNDER_REVIEW')}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  <span>Start Review</span>
+                </button>
+              )}
+
+              {/* UNDER_REVIEW -> APPROVED (MANAGER) */}
+              {canApprove && (
+                <button
+                  onClick={() => handleTransition('APPROVED')}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Approve Request</span>
+                </button>
+              )}
+
+              {/* UNDER_REVIEW -> REJECTED (MANAGER) */}
+              {canReject && (
+                <button
+                  onClick={() => setRejectModalOpen(true)}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                  <span>Reject Request</span>
+                </button>
+              )}
+
+              {/* APPROVED -> IN_PROGRESS (DEVELOPER Assignee) */}
+              {canStartWork && (
+                <button
+                  onClick={() => handleTransition('IN_PROGRESS')}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  <span>Start Work</span>
+                </button>
+              )}
+
+              {/* IN_PROGRESS -> COMPLETED (DEVELOPER Assignee) */}
+              {canComplete && (
+                <button
+                  onClick={() => handleTransition('COMPLETED')}
+                  disabled={transitioning}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors disabled:opacity-50"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <span>Mark Completed</span>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Description */}
         <div className="border-t border-slate-100 pt-5">
@@ -371,6 +529,14 @@ export const RequestDetail: React.FC = () => {
         </h2>
         <HistoryTimeline logs={history} loading={historyLoading} />
       </div>
+
+      {/* Reject Modal */}
+      <RejectModal
+        isOpen={rejectModalOpen}
+        onClose={() => setRejectModalOpen(false)}
+        onConfirm={(reason) => handleTransition('REJECTED', reason)}
+        loading={transitioning}
+      />
     </div>
   );
 };
