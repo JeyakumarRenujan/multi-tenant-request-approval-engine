@@ -7,6 +7,7 @@ import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { RequestList } from './pages/RequestList';
+import { CreateRequest } from './pages/CreateRequest';
 
 const HomeRedirect: React.FC = () => {
   const { user } = useAuth();
@@ -37,7 +38,7 @@ export function App() {
               <Route path="/" element={<HomeRedirect />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/requests" element={<RequestList />} />
-              <Route path="/requests/new" element={<PlaceholderPage title="New Request" />} />
+              <Route path="/requests/new" element={<CreateRequest />} />
               <Route path="/requests/:id" element={<PlaceholderPage title="Request Detail" />} />
               <Route path="/clients" element={<PlaceholderPage title="Clients" />} />
               <Route path="/users" element={<PlaceholderPage title="Users" />} />
