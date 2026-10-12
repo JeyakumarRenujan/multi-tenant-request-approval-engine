@@ -60,6 +60,16 @@ export class RequestController {
       next(error);
     }
   }
+
+  async getHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const history = await requestService.getRequestHistory(req.user!, id);
+      res.status(200).json({ history });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const requestController = new RequestController();

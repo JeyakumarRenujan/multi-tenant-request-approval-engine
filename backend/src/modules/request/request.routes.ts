@@ -65,4 +65,11 @@ router.post(
   (req, res, next) => requestController.transition(req, res, next)
 );
 
+// GET /requests/:id/history - Read-only tenant-scoped activity audit history
+router.get(
+  '/:id/history',
+  validate({ params: requestParamsSchema }),
+  (req, res, next) => requestController.getHistory(req, res, next)
+);
+
 export default router;

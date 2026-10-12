@@ -612,6 +612,62 @@ export class RequestService {
 
     return updated;
   }
+
+  async getRequestHistory(user: AuthenticatedUser, requestId: string) {
+    if (user.role === Role.PLATFORM_ADMIN) {
+      throw new ForbiddenError('Platform administrators cannot access request history');
+    }
+
+    const organizationId = user.organizationId;
+    if (!organizationId) {
+      throw new NotFoundError('Organization not found');
+    }
+
+    const request = await prisma.request.findUnique({
+      where: { id: requestId },
+    });
+
+    // Enforce Rule #3: Cross-tenant access returns 404 to avoid ID enumeration
+    if (!request || request.organizationId !== organizationId) {
+      throw new NotFoundError('Request not found');
+    }
+
+    // Role-based visibility check:
+    // CLIENT_USER: only requests belonging to their clientId
+    if (user.role === Role.CLIENT_USER && request.clientId !== user.clientId) {
+      throw new NotFoundError('Request not found');
+    }
+
+    // DEVELOPER: only assigned requests that are not in DRAFT
+    if (user.role === Role.DEVELOPER) {
+      if (request.assigneeId !== user.id || request.status === RequestStatus.DRAFT) {
+        throw new NotFoundError('Request not found');
+      }
+    }
+
+    // Fetch ActivityLog rows ordered chronologically (createdAt asc)
+    const history = await prisma.activityLog.findMany({
+      where: {
+        requestId,
+        organizationId,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      include: {
+        actor: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    return history;
+  }
 }
 
 export const requestService = new RequestService();
