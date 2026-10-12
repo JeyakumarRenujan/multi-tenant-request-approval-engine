@@ -6,6 +6,8 @@ import clientRoutes from './modules/client/client.routes';
 import userRoutes from './modules/user/user.routes';
 import requestRoutes from './modules/request/request.routes';
 import dashboardRoutes from './modules/dashboard/dashboard.routes';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerDocument } from './docs/swagger';
 import { errorHandler } from './middlewares/errorHandler.middleware';
 
 export const app = express();
@@ -13,6 +15,9 @@ export const app = express();
 // Middlewares
 app.use(cors());
 app.use(express.json());
+
+// API Documentation served at /api-docs
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 // Health check endpoint
 app.get('/health', (_req, res) => {
