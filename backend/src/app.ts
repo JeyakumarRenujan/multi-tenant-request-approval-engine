@@ -4,6 +4,7 @@ import authRoutes from './modules/auth/auth.routes';
 import organizationRoutes from './modules/organization/organization.routes';
 import clientRoutes from './modules/client/client.routes';
 import userRoutes from './modules/user/user.routes';
+import requestRoutes from './modules/request/request.routes';
 import { errorHandler } from './middlewares/errorHandler.middleware';
 
 export const app = express();
@@ -26,6 +27,9 @@ app.use('/organizations', organizationRoutes);
 // Client and User management routes (ORG_ADMIN only)
 app.use('/clients', clientRoutes);
 app.use('/users', userRoutes);
+
+// Request workflow routes
+app.use('/requests', requestRoutes);
 
 // Centralized error handler
 app.use(errorHandler);
