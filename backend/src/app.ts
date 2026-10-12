@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import { config } from './config/env';
 import authRoutes from './modules/auth/auth.routes';
 import organizationRoutes from './modules/organization/organization.routes';
 import clientRoutes from './modules/client/client.routes';
@@ -12,8 +14,20 @@ import { errorHandler } from './middlewares/errorHandler.middleware';
 
 export const app = express();
 
-// Middlewares
-app.use(cors());
+// Security headers with Helmet
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // Permits Swagger UI interactive documentation assets
+  })
+);
+
+// Enable CORS restricted to frontend origin
+app.use(
+  cors({
+    origin: config.frontendUrl,
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // API Documentation served at /api-docs
