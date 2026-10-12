@@ -74,6 +74,7 @@ describe('Auth Endpoints Integration Tests', () => {
         .send({ email: testEmail });
 
       expect(res.status).toBe(400);
+      expect(res.body).toHaveProperty('error');
       expect(res.body.error.code).toBe('BAD_REQUEST');
     });
   });
@@ -137,5 +138,46 @@ describe('Auth Endpoints Integration Tests', () => {
       expect(refreshRes.status).toBe(401);
     });
   });
-});
 
+  describe('Authentication & Inactive Account Enforcement (Requirement #4)', () => {
+    it('blocks a user with isActive=false even if they present a still-valid access token', async () => {
+      // 1. Authenticate to obtain a valid access token while user is active
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: rawPassword });
+
+      expect(loginRes.status).toBe(200);
+      const validAccessToken = loginRes.body.accessToken;
+
+      // 2. Verify that the access token works on a protected route while active
+      const activeRes = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${validAccessToken}`);
+
+      expect(activeRes.status).toBe(200);
+      expect(activeRes.body.user.id).toBe(testUserId);
+
+      // 3. Deactivate the user in the database (simulating immediate admin deactivation)
+      await prisma.user.update({
+        where: { id: testUserId },
+        data: { isActive: false },
+      });
+
+      // 4. Attempt to access the protected route with the still-valid token
+      const inactiveRes = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${validAccessToken}`);
+
+      // Must be rejected with 401 UNAUTHORIZED
+      expect(inactiveRes.status).toBe(401);
+      expect(inactiveRes.body.error.code).toBe('UNAUTHORIZED');
+      expect(inactiveRes.body.error.message).toMatch(/inactive/i);
+
+      // 5. Restore user to active state for clean test teardown
+      await prisma.user.update({
+        where: { id: testUserId },
+        data: { isActive: true },
+      });
+    });
+  });
+});

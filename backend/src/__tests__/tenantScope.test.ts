@@ -1,7 +1,9 @@
-import { Role } from '@prisma/client';
-import { getTenantScope, assertTenantAccess } from '../utils/tenantScope';
+import { Role, RequestCategory, RequestPriority } from '@prisma/client';
+import { getTenantScope, assertTenantAccess, validateClientBelongsToOrg } from '../utils/tenantScope';
 import { NotFoundError, UnauthorizedError } from '../errors/AppError';
 import { AuthenticatedUser } from '../types/express';
+import { prisma } from '../config/prisma';
+import { hashPassword } from '../utils/password';
 
 describe('Tenant Scoping & Isolation (Rules #1, #2, #3)', () => {
   const org1User: AuthenticatedUser = {
@@ -111,5 +113,89 @@ describe('Tenant Scoping & Isolation (Rules #1, #2, #3)', () => {
       expect(result).toBe(org2Record);
     });
   });
-});
 
+  describe('Database & Service Level Constraints (Hardening Check)', () => {
+    let orgAId: string;
+    let orgBId: string;
+    let clientAId: string;
+    let clientBId: string;
+    let userAId: string;
+
+    beforeAll(async () => {
+      const orgA = await prisma.organization.create({ data: { name: 'Org A' } });
+      const orgB = await prisma.organization.create({ data: { name: 'Org B' } });
+      orgAId = orgA.id;
+      orgBId = orgB.id;
+
+      const clientA = await prisma.client.create({
+        data: { name: 'Client A Corp', organizationId: orgAId },
+      });
+      const clientB = await prisma.client.create({
+        data: { name: 'Client B Corp', organizationId: orgBId },
+      });
+      clientAId = clientA.id;
+      clientBId = clientB.id;
+
+      const pwdHash = await hashPassword('password123');
+      const userA = await prisma.user.create({
+        data: {
+          email: `usera.${Date.now()}@orga.com`,
+          passwordHash: pwdHash,
+          name: 'User A',
+          role: Role.ORG_ADMIN,
+          organizationId: orgAId,
+        },
+      });
+      userAId = userA.id;
+    });
+
+    afterAll(async () => {
+      await prisma.user.deleteMany({ where: { id: userAId } });
+      await prisma.client.deleteMany({ where: { id: { in: [clientAId, clientBId] } } });
+      await prisma.organization.deleteMany({ where: { id: { in: [orgAId, orgBId] } } });
+      await prisma.$disconnect();
+    });
+
+    it('validateClientBelongsToOrg returns client when client belongs to org', async () => {
+      const result = await validateClientBelongsToOrg(prisma, clientAId, orgAId);
+      expect(result.id).toBe(clientAId);
+      expect(result.organizationId).toBe(orgAId);
+    });
+
+    it('validateClientBelongsToOrg throws 404 NotFoundError when client belongs to another org (Rule #3)', async () => {
+      await expect(validateClientBelongsToOrg(prisma, clientBId, orgAId)).rejects.toThrow(NotFoundError);
+    });
+
+    it('database composite foreign key prevents inserting a Request with mismatched client and org', async () => {
+      // Trying to create a request for Org A, but pointing to Client B (from Org B)
+      await expect(
+        prisma.request.create({
+          data: {
+            title: 'Illegal Cross-Tenant Request',
+            description: 'Should fail at DB level',
+            category: RequestCategory.GENERAL,
+            priority: RequestPriority.MEDIUM,
+            organizationId: orgAId,
+            clientId: clientBId, // From Org B!
+            ownerId: userAId,
+          },
+        })
+      ).rejects.toThrow();
+    });
+
+    it('database CHECK constraint prevents creating a non-PLATFORM_ADMIN user without an organizationId', async () => {
+      const pwdHash = await hashPassword('password123');
+      await expect(
+        prisma.user.create({
+          data: {
+            email: `illegal.${Date.now()}@no-org.com`,
+            passwordHash: pwdHash,
+            name: 'No Org Admin',
+            role: Role.ORG_ADMIN,
+            organizationId: null, // Illegal for ORG_ADMIN
+          },
+        })
+      ).rejects.toThrow();
+    });
+  });
+});

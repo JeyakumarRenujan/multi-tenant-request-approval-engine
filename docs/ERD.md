@@ -123,3 +123,21 @@ erDiagram
 ### 6. `RefreshToken` (Secure Session Lifecycle)
 - Stores SHA-256 hashed refresh tokens (`tokenHash`) to prevent plaintext token leaks if the database is inspected.
 - Supports **Refresh Token Rotation**: every refresh operation revokes the previous token (`revokedAt = now()`) and issues a new pair.
+
+---
+
+## Relational Hardening & Data Integrity
+
+1. **Explicit `onDelete: Restrict` Protection**:
+   - `Request`, `ActivityLog`, `User`, and `Client` relationships use `onDelete: Restrict` rather than `Cascade`.
+   - This ensures historical request and audit records cannot be inadvertently deleted or destroyed by cascading foreign key drops.
+
+2. **Cross-Tenant Client Isolation via Composite Foreign Key**:
+   - `Client` declares a unique composite key on `(id, organizationId)`.
+   - `Request` references `(clientId, organizationId)` via composite foreign key `FOREIGN KEY ("clientId", "organizationId") REFERENCES "clients"("id", "organizationId") ON DELETE RESTRICT`.
+   - This database-level constraint physically guarantees that a `Request` can never reference a `Client` belonging to a different `Organization`.
+
+3. **User Organization Check Constraint**:
+   - Database CHECK constraint `chk_user_organization` enforces `("role" = 'PLATFORM_ADMIN' OR "organizationId" IS NOT NULL)`.
+   - Non-platform administrators can never exist in the database without an assigned tenant organization.
+

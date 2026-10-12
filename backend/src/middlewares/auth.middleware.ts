@@ -47,6 +47,11 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw new UnauthorizedError('User account is inactive or no longer exists');
     }
 
+    // Ensure non-PLATFORM_ADMIN users strictly have an organizationId
+    if (user.role !== Role.PLATFORM_ADMIN && !user.organizationId) {
+      throw new UnauthorizedError('Tenant user must belong to an organization');
+    }
+
     req.user = user;
     next();
   } catch (error) {

@@ -46,7 +46,7 @@ model Organization {
   name      String
   createdAt DateTime @default(now())
 
-  // Relationships
+  // Relationships - all use Restrict to preserve audit history and avoid cascading deletes
   clients      Client[]
   users        User[]
   requests     Request[]
@@ -62,10 +62,12 @@ model Client {
   createdAt      DateTime @default(now())
 
   // Relationships
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   users        User[]
   requests     Request[]
 
+  // Composite unique constraint enables composite foreign key in Request for cross-tenant isolation
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@map("clients")
 }
@@ -82,9 +84,9 @@ model User {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  // Relationships
-  organization     Organization?  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client           Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  // Relationships - Restrict prevents deleting users with operational or tenant history
+  organization     Organization?  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  client           Client?        @relation(fields: [clientId], references: [id], onDelete: Restrict)
   ownedRequests    Request[]      @relation("RequestOwner")
   assignedRequests Request[]      @relation("RequestAssignee")
   activityLogs     ActivityLog[]  @relation("Actor")
@@ -112,11 +114,12 @@ model Request {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
-  // Relationships
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Relationships - Restrict prevents deleting organizations, clients, or users tied to requests
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  // Composite foreign key guarantees at the DB-level that the client belongs to this exact organization
+  client       Client        @relation(fields: [clientId, organizationId], references: [id, organizationId], onDelete: Restrict)
   owner        User          @relation("RequestOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  assignee     User?         @relation("RequestAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignee     User?         @relation("RequestAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
   activityLogs ActivityLog[]
 
   // Performance and multi-tenant scoping indexes
@@ -139,9 +142,9 @@ model ActivityLog {
   metadata       Json?
   createdAt      DateTime       @default(now())
 
-  // Relationships
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  request      Request      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  // Relationships - Restrict guarantees audit logs are permanent and immutable
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  request      Request      @relation(fields: [requestId], references: [id], onDelete: Restrict)
   actor        User         @relation("Actor", fields: [actorId], references: [id], onDelete: Restrict)
 
   @@index([organizationId])

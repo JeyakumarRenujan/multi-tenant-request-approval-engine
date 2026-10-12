@@ -77,3 +77,27 @@ export function assertTenantAccess<T extends { organizationId?: string | null; c
   return record;
 }
 
+/**
+ * Validates that a Client belongs to the given Organization.
+ * Enforces Rule #3: Returns 404 NotFoundError if the client does not exist
+ * or belongs to a different organization, preventing cross-tenant leakage.
+ */
+export async function validateClientBelongsToOrg(
+  prismaClient: any,
+  clientId: string,
+  organizationId: string
+) {
+  const client = await prismaClient.client.findFirst({
+    where: {
+      id: clientId,
+      organizationId,
+    },
+  });
+
+  if (!client) {
+    throw new NotFoundError('Client not found');
+  }
+
+  return client;
+}
+
