@@ -16,47 +16,52 @@ import {
 } from './request.schema';
 import { assertTransitionAllowed } from './request.stateMachine';
 
+/**
+ * Helper to derive the strict visibility where clause based on tenant role.
+ * Shared across request queries and dashboard counts to guarantee identical visibility rules without drift.
+ *
+ * Rules:
+ * - CLIENT_USER: only requests of their own clientId.
+ * - DEVELOPER: only requests assigned to them AND status != DRAFT.
+ *   Architecture Decision: Developers must never see DRAFT requests, even if assigned.
+ *   A DRAFT request is a private work-in-progress of the author that has not yet been submitted into
+ *   the official review/approval workflow. Hiding drafts prevents premature developer action and
+ *   protects incomplete or changing client requirements.
+ * - MANAGER and ORG_ADMIN: all requests in their organization.
+ * - PLATFORM_ADMIN: cannot access requests (403 Forbidden).
+ */
+export function getRequestVisibilityWhere(user: AuthenticatedUser): Prisma.RequestWhereInput {
+  if (user.role === Role.PLATFORM_ADMIN) {
+    throw new ForbiddenError('Platform administrators cannot access tenant requests');
+  }
+
+  const organizationId = user.organizationId;
+  if (!organizationId) {
+    throw new NotFoundError('Organization not found');
+  }
+
+  const where: Prisma.RequestWhereInput = {
+    organizationId,
+  };
+
+  if (user.role === Role.CLIENT_USER) {
+    if (!user.clientId) {
+      throw new NotFoundError('Client entity not found');
+    }
+    where.clientId = user.clientId;
+  } else if (user.role === Role.DEVELOPER) {
+    where.assigneeId = user.id;
+    // Architecture Decision: Developers must never see DRAFT requests, even if assigned.
+    where.status = { not: RequestStatus.DRAFT };
+  }
+  // MANAGER and ORG_ADMIN see all requests within the organization
+
+  return where;
+}
+
 export class RequestService {
-  /**
-   * Helper to derive the strict visibility where clause based on tenant role.
-   *
-   * Rules:
-   * - CLIENT_USER: only requests of their own clientId.
-   * - DEVELOPER: only requests assigned to them AND status != DRAFT.
-   *   Architecture Decision: Developers must never see DRAFT requests, even if assigned.
-   *   A DRAFT request is a private work-in-progress of the author that has not yet been submitted into
-   *   the official review/approval workflow. Hiding drafts prevents premature developer action and
-   *   protects incomplete or changing client requirements.
-   * - MANAGER and ORG_ADMIN: all requests in their organization.
-   * - PLATFORM_ADMIN: cannot access requests (403 Forbidden).
-   */
-  private getVisibilityWhere(user: AuthenticatedUser): Prisma.RequestWhereInput {
-    if (user.role === Role.PLATFORM_ADMIN) {
-      throw new ForbiddenError('Platform administrators cannot access tenant requests');
-    }
-
-    const organizationId = user.organizationId;
-    if (!organizationId) {
-      throw new NotFoundError('Organization not found');
-    }
-
-    const where: Prisma.RequestWhereInput = {
-      organizationId,
-    };
-
-    if (user.role === Role.CLIENT_USER) {
-      if (!user.clientId) {
-        throw new NotFoundError('Client entity not found');
-      }
-      where.clientId = user.clientId;
-    } else if (user.role === Role.DEVELOPER) {
-      where.assigneeId = user.id;
-      // Architecture Decision: Developers must never see DRAFT requests, even if assigned.
-      where.status = { not: RequestStatus.DRAFT };
-    }
-    // MANAGER and ORG_ADMIN see all requests within the organization
-
-    return where;
+  public getVisibilityWhere(user: AuthenticatedUser): Prisma.RequestWhereInput {
+    return getRequestVisibilityWhere(user);
   }
 
   async createRequest(user: AuthenticatedUser, input: CreateRequestInput) {

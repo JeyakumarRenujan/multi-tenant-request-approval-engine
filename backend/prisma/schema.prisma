@@ -129,6 +129,7 @@ model Request {
   @@index([organizationId, clientId])
   @@index([assigneeId])
   @@index([dueDate])
+  @@index([organizationId, dueDate, status])
   @@map("requests")
 }
 
