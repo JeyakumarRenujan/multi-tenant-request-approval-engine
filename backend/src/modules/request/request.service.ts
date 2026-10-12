@@ -59,6 +59,22 @@ export function getRequestVisibilityWhere(user: AuthenticatedUser): Prisma.Reque
   return where;
 }
 
+/**
+ * Evaluates whether a request is currently overdue.
+ * Computed dynamically at read time (never persisted to the database).
+ *
+ * Rules:
+ * - A request is overdue if and only if dueDate < now AND status NOT IN (COMPLETED, REJECTED).
+ * - If dueDate is null or undefined, the request cannot be overdue.
+ * - Requests in terminal states (COMPLETED or REJECTED) are never considered overdue,
+ *   even if their historical dueDate was in the past.
+ */
+export function isRequestOverdue(dueDate: Date | null | undefined, status: RequestStatus): boolean {
+  if (!dueDate) return false;
+  if (status === RequestStatus.COMPLETED || status === RequestStatus.REJECTED) return false;
+  return new Date(dueDate) < new Date();
+}
+
 export class RequestService {
   public getVisibilityWhere(user: AuthenticatedUser): Prisma.RequestWhereInput {
     return getRequestVisibilityWhere(user);
@@ -138,7 +154,10 @@ export class RequestService {
       },
     });
 
-    return request;
+    return {
+      ...request,
+      isOverdue: isRequestOverdue(request.dueDate, request.status),
+    };
   }
 
   async getRequests(user: AuthenticatedUser, query: RequestQueryInput) {
@@ -223,8 +242,13 @@ export class RequestService {
       }),
     ]);
 
+    const requestsWithOverdue = data.map((req) => ({
+      ...req,
+      isOverdue: isRequestOverdue(req.dueDate, req.status),
+    }));
+
     return {
-      data,
+      data: requestsWithOverdue,
       pagination: {
         page,
         pageSize,
@@ -277,7 +301,10 @@ export class RequestService {
       }
     }
 
-    return request;
+    return {
+      ...request,
+      isOverdue: isRequestOverdue(request.dueDate, request.status),
+    };
   }
 
   async updateRequest(user: AuthenticatedUser, requestId: string, input: UpdateRequestInput) {
@@ -398,7 +425,10 @@ export class RequestService {
       });
     });
 
-    return updated;
+    return {
+      ...updated,
+      isOverdue: isRequestOverdue(updated.dueDate, updated.status),
+    };
   }
 
   async assignRequest(
@@ -524,7 +554,10 @@ export class RequestService {
       });
     });
 
-    return updated;
+    return {
+      ...updated,
+      isOverdue: isRequestOverdue(updated.dueDate, updated.status),
+    };
   }
 
   async transitionRequest(
@@ -637,7 +670,10 @@ export class RequestService {
       });
     });
 
-    return updated;
+    return {
+      ...updated,
+      isOverdue: isRequestOverdue(updated.dueDate, updated.status),
+    };
   }
 
   async getRequestHistory(user: AuthenticatedUser, requestId: string) {
