@@ -5,7 +5,7 @@ import { generateAccessToken } from '../utils/token';
 import { hashPassword } from '../utils/password';
 import { Role, RequestCategory, RequestPriority, RequestStatus } from '@prisma/client';
 
-describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => {
+describe('Day 2: Multi-Tenant CRUD, Role Permissions, Optimistic Locking & Validation Tests', () => {
   // IDs & Tokens
   let orgAId: string;
   let orgBId: string;
@@ -297,7 +297,7 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
     });
   });
 
-  describe('3. Users and Clients - ORG_ADMIN Management (Requirement #3)', () => {
+  describe('3. Users and Clients - ORG_ADMIN Management & Self-Protection (Requirement #3 & #4)', () => {
     it('client user cannot list clients (403 Forbidden)', async () => {
       const res = await request(app)
         .get('/clients')
@@ -346,6 +346,28 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('NOT_FOUND');
     });
+
+    it('ORG_ADMIN cannot deactivate their own account (returns 400 Bad Request)', async () => {
+      const res = await request(app)
+        .patch(`/users/${orgAAdminId}`)
+        .set('Authorization', `Bearer ${orgAAdminToken}`)
+        .send({ isActive: false });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/cannot deactivate their own account/i);
+    });
+
+    it('ORG_ADMIN cannot change the role of their own account (returns 400 Bad Request)', async () => {
+      const res = await request(app)
+        .patch(`/users/${orgAAdminId}`)
+        .set('Authorization', `Bearer ${orgAAdminToken}`)
+        .send({ role: Role.DEVELOPER });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toMatch(/cannot change the role of their own account/i);
+    });
   });
 
   describe('4. Cross-Tenant Isolation & Anti-Enumeration 404 (Requirement #4 & Rules)', () => {
@@ -387,7 +409,7 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
     });
 
     it('Org B manager cannot assign an Org A developer (returns 404)', async () => {
-      // Org B creates their own request first
+      // Org B creates their own request in SUBMITTED status so status check passes
       const createRes = await request(app)
         .post('/requests')
         .set('Authorization', `Bearer ${orgBManagerToken}`)
@@ -401,6 +423,12 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
 
       const orgBRequestId = createRes.body.request.id;
 
+      // Update status to SUBMITTED so assignment status rule is met
+      await prisma.request.update({
+        where: { id: orgBRequestId },
+        data: { status: RequestStatus.SUBMITTED },
+      });
+
       // Org B manager attempts to assign Org A developer to Org B request
       const assignRes = await request(app)
         .patch(`/requests/${orgBRequestId}/assign`)
@@ -413,7 +441,7 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
     });
   });
 
-  describe('5. Visibility Rules (Requirement #5)', () => {
+  describe('5. Visibility Rules & Developer Draft Protection (Requirement #1 & #5)', () => {
     let reqClient1Id: string;
     let reqClient2Id: string;
 
@@ -473,28 +501,57 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
       expect(res.body.error.code).toBe('FORBIDDEN');
     });
 
-    it('developer only sees requests assigned to them', async () => {
-      // Initially, reqClient1Id is unassigned -> developer should not see it
-      const unassignedList = await request(app)
+    it('developers must NEVER see DRAFT requests, even if assigned to them (Requirement #1)', async () => {
+      // Create a DRAFT request pre-assigned to the developer in the DB
+      const draftAssigned = await prisma.request.create({
+        data: {
+          title: 'Assigned Draft Task',
+          description: 'Developer should not see this while in draft',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.MEDIUM,
+          status: RequestStatus.DRAFT,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAAdminId,
+          assigneeId: orgADevId,
+        },
+      });
+
+      // 1. In list query, developer should NOT see the draft request
+      const listRes = await request(app)
         .get('/requests')
         .set('Authorization', `Bearer ${orgADevToken}`);
 
-      const unassignedIds = unassignedList.body.data.map((r: any) => r.id);
-      expect(unassignedIds).not.toContain(reqClient1Id);
+      const ids = listRes.body.data.map((r: any) => r.id);
+      expect(ids).not.toContain(draftAssigned.id);
 
-      // Manager assigns reqClient1Id to Developer
-      await request(app)
-        .patch(`/requests/${reqClient1Id}/assign`)
-        .set('Authorization', `Bearer ${orgAManagerToken}`)
-        .send({ assigneeId: orgADevId });
+      // 2. Querying by ID returns 404 (anti-enumeration)
+      const getRes = await request(app)
+        .get(`/requests/${draftAssigned.id}`)
+        .set('Authorization', `Bearer ${orgADevToken}`);
 
-      // Now developer can see reqClient1Id
-      const assignedList = await request(app)
+      expect(getRes.status).toBe(404);
+      expect(getRes.body.error.code).toBe('NOT_FOUND');
+
+      // 3. Move status to SUBMITTED -> now developer CAN see it
+      await prisma.request.update({
+        where: { id: draftAssigned.id },
+        data: { status: RequestStatus.SUBMITTED },
+      });
+
+      const listAfterSubmit = await request(app)
         .get('/requests')
         .set('Authorization', `Bearer ${orgADevToken}`);
 
-      const assignedIds = assignedList.body.data.map((r: any) => r.id);
-      expect(assignedIds).toContain(reqClient1Id);
+      const submittedIds = listAfterSubmit.body.data.map((r: any) => r.id);
+      expect(submittedIds).toContain(draftAssigned.id);
+
+      const getAfterSubmit = await request(app)
+        .get(`/requests/${draftAssigned.id}`)
+        .set('Authorization', `Bearer ${orgADevToken}`);
+
+      expect(getAfterSubmit.status).toBe(200);
+      expect(getAfterSubmit.body.request.id).toBe(draftAssigned.id);
     });
 
     it('draft request can only be edited by the creator', async () => {
@@ -518,7 +575,150 @@ describe('Day 2: Multi-Tenant CRUD, Role Permissions & Validation Tests', () => 
     });
   });
 
-  describe('6. Overdue Filter (Requirement #4 & #7)', () => {
+  describe('6. Assignment Status Rules & Optimistic Locking (Requirements #2 & #3)', () => {
+    it('assignment fails with 409 CONFLICT if request is in DRAFT status', async () => {
+      // Create request in DRAFT status
+      const draftReq = await prisma.request.create({
+        data: {
+          title: 'Draft Request for Assignment Check',
+          description: 'Cannot be assigned in draft status',
+          category: RequestCategory.GENERAL,
+          priority: RequestPriority.LOW,
+          status: RequestStatus.DRAFT,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/requests/${draftReq.id}/assign`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({ assigneeId: orgADevId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('CONFLICT');
+      expect(res.body.error.message).toMatch(/Assignment is only allowed when status is/i);
+    });
+
+    it('assignment fails with 409 CONFLICT if request is COMPLETED', async () => {
+      const completedReq = await prisma.request.create({
+        data: {
+          title: 'Completed Request',
+          description: 'Cannot be assigned in completed status',
+          category: RequestCategory.GENERAL,
+          priority: RequestPriority.LOW,
+          status: RequestStatus.COMPLETED,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/requests/${completedReq.id}/assign`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({ assigneeId: orgADevId });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('CONFLICT');
+    });
+
+    it('assignment succeeds when status is SUBMITTED, UNDER_REVIEW, APPROVED or IN_PROGRESS', async () => {
+      const submittedReq = await prisma.request.create({
+        data: {
+          title: 'Submitted Request for Assignment',
+          description: 'Valid for assignment',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.HIGH,
+          status: RequestStatus.SUBMITTED,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 1,
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/requests/${submittedReq.id}/assign`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({ assigneeId: orgADevId, expectedVersion: 1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.request.assigneeId).toBe(orgADevId);
+      expect(res.body.request.version).toBe(2);
+    });
+
+    it('PATCH /requests/:id with mismatched expectedVersion returns 409 CONFLICT', async () => {
+      const draftReq = await prisma.request.create({
+        data: {
+          title: 'Versioned Draft Request',
+          description: 'Testing optimistic locking',
+          category: RequestCategory.GENERAL,
+          priority: RequestPriority.MEDIUM,
+          status: RequestStatus.DRAFT,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 5,
+        },
+      });
+
+      // Attempt update with stale version
+      const staleRes = await request(app)
+        .patch(`/requests/${draftReq.id}`)
+        .set('Authorization', `Bearer ${orgAClientUser1Token}`)
+        .send({ title: 'Stale Edit', expectedVersion: 3 });
+
+      expect(staleRes.status).toBe(409);
+      expect(staleRes.body.error.code).toBe('CONFLICT');
+
+      // Update with correct version succeeds and increments
+      const validRes = await request(app)
+        .patch(`/requests/${draftReq.id}`)
+        .set('Authorization', `Bearer ${orgAClientUser1Token}`)
+        .send({ title: 'Valid Edit', expectedVersion: 5 });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.request.version).toBe(6);
+      expect(validRes.body.request.title).toBe('Valid Edit');
+    });
+
+    it('PATCH /requests/:id/assign with mismatched expectedVersion returns 409 CONFLICT', async () => {
+      const activeReq = await prisma.request.create({
+        data: {
+          title: 'Active Versioned Request',
+          description: 'Testing optimistic locking on assign',
+          category: RequestCategory.GENERAL,
+          priority: RequestPriority.MEDIUM,
+          status: RequestStatus.UNDER_REVIEW,
+          organizationId: orgAId,
+          clientId: clientA1Id,
+          ownerId: orgAClientUser1Id,
+          version: 10,
+        },
+      });
+
+      const staleRes = await request(app)
+        .patch(`/requests/${activeReq.id}/assign`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({ assigneeId: orgADevId, expectedVersion: 8 });
+
+      expect(staleRes.status).toBe(409);
+      expect(staleRes.body.error.code).toBe('CONFLICT');
+
+      // Valid expectedVersion succeeds
+      const validRes = await request(app)
+        .patch(`/requests/${activeReq.id}/assign`)
+        .set('Authorization', `Bearer ${orgAManagerToken}`)
+        .send({ assigneeId: orgADevId, expectedVersion: 10 });
+
+      expect(validRes.status).toBe(200);
+      expect(validRes.body.request.version).toBe(11);
+    });
+  });
+
+  describe('7. Overdue Filter (Requirement #4 & #7)', () => {
     let overdueReqId: string;
     let futureReqId: string;
     let completedPastReqId: string;

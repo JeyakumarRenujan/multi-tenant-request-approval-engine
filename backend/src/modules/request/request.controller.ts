@@ -43,8 +43,8 @@ export class RequestController {
   async assign(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = req.params.id as string;
-      const { assigneeId } = req.body;
-      const request = await requestService.assignRequest(req.user!, id, assigneeId);
+      const { assigneeId, expectedVersion } = req.body;
+      const request = await requestService.assignRequest(req.user!, id, assigneeId, expectedVersion);
       res.status(200).json({ request });
     } catch (error) {
       next(error);

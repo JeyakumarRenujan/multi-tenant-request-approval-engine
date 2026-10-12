@@ -24,10 +24,12 @@ export const updateRequestSchema = z.object({
     message: 'Invalid request priority',
   }).optional(),
   dueDate: z.string().datetime({ message: 'dueDate must be a valid ISO datetime string' }).optional().nullable(),
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 export const assignRequestSchema = z.object({
   assigneeId: z.string().uuid('Invalid assignee UUID'),
+  expectedVersion: z.number().int().positive().optional(),
 });
 
 export const requestQuerySchema = z.object({

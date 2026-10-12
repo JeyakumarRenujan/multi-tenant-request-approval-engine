@@ -32,6 +32,7 @@ enum RequestPriority {
 
 enum RequestStatus {
   DRAFT
+  SUBMITTED
   PENDING
   UNDER_REVIEW
   APPROVED

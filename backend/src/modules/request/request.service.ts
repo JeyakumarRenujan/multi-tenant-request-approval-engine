@@ -3,6 +3,7 @@ import { prisma } from '../../config/prisma';
 import { AuthenticatedUser } from '../../types/express';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '../../errors/AppError';
@@ -18,7 +19,11 @@ export class RequestService {
    *
    * Rules:
    * - CLIENT_USER: only requests of their own clientId.
-   * - DEVELOPER: only requests assigned to them.
+   * - DEVELOPER: only requests assigned to them AND status != DRAFT.
+   *   Architecture Decision: Developers must never see DRAFT requests, even if assigned.
+   *   A DRAFT request is a private work-in-progress of the author that has not yet been submitted into
+   *   the official review/approval workflow. Hiding drafts prevents premature developer action and
+   *   protects incomplete or changing client requirements.
    * - MANAGER and ORG_ADMIN: all requests in their organization.
    * - PLATFORM_ADMIN: cannot access requests (403 Forbidden).
    */
@@ -43,6 +48,8 @@ export class RequestService {
       where.clientId = user.clientId;
     } else if (user.role === Role.DEVELOPER) {
       where.assigneeId = user.id;
+      // Architecture Decision: Developers must never see DRAFT requests, even if assigned.
+      where.status = { not: RequestStatus.DRAFT };
     }
     // MANAGER and ORG_ADMIN see all requests within the organization
 
@@ -127,55 +134,63 @@ export class RequestService {
   }
 
   async getRequests(user: AuthenticatedUser, query: RequestQueryInput) {
-    // 1. Base visibility filter
+    // 1. Base visibility filter (tenant isolation & role-based visibility)
     const baseWhere = this.getVisibilityWhere(user);
 
-    // 2. Build combined where clause
-    const where: Prisma.RequestWhereInput = {
-      ...baseWhere,
-    };
+    // 2. Build explicit AND array to guarantee all search, filters, and role restrictions
+    //    are strictly conjoined with tenant scope using AND.
+    const andConditions: Prisma.RequestWhereInput[] = [
+      baseWhere,
+    ];
 
     if (query.status) {
-      where.status = query.status;
+      andConditions.push({ status: query.status });
     }
 
     if (query.priority) {
-      where.priority = query.priority;
+      andConditions.push({ priority: query.priority });
     }
 
     if (query.category) {
-      where.category = query.category;
+      andConditions.push({ category: query.category });
     }
 
-    if (query.assigneeId) {
-      // If user is a DEVELOPER, their visibility is already restricted to their own assigneeId
-      if (user.role !== Role.DEVELOPER) {
-        where.assigneeId = query.assigneeId;
-      }
+    if (query.assigneeId && user.role !== Role.DEVELOPER) {
+      andConditions.push({ assigneeId: query.assigneeId });
     }
 
     if (query.search) {
-      where.title = {
-        contains: query.search.trim(),
-        mode: 'insensitive',
-      };
+      andConditions.push({
+        title: {
+          contains: query.search.trim(),
+          mode: 'insensitive',
+        },
+      });
     }
 
     // Overdue filter: dueDate < now AND status NOT IN (COMPLETED, REJECTED)
     if (query.overdue === true) {
-      where.dueDate = {
-        lt: new Date(),
-      };
-      where.status = {
-        notIn: [RequestStatus.COMPLETED, RequestStatus.REJECTED],
-      };
+      andConditions.push({
+        dueDate: {
+          lt: new Date(),
+        },
+        status: {
+          notIn: [RequestStatus.COMPLETED, RequestStatus.REJECTED],
+        },
+      });
     } else if (query.overdue === false) {
-      where.OR = [
-        { dueDate: null },
-        { dueDate: { gte: new Date() } },
-        { status: { in: [RequestStatus.COMPLETED, RequestStatus.REJECTED] } },
-      ];
+      andConditions.push({
+        OR: [
+          { dueDate: null },
+          { dueDate: { gte: new Date() } },
+          { status: { in: [RequestStatus.COMPLETED, RequestStatus.REJECTED] } },
+        ],
+      });
     }
+
+    const where: Prisma.RequestWhereInput = {
+      AND: andConditions,
+    };
 
     // 3. Pagination & Sorting
     const page = Number(query.page) || 1;
@@ -246,9 +261,12 @@ export class RequestService {
       throw new NotFoundError('Request not found');
     }
 
-    // Visibility Check for DEVELOPER: only assigned requests
-    if (user.role === Role.DEVELOPER && request.assigneeId !== user.id) {
-      throw new NotFoundError('Request not found');
+    // Visibility Check for DEVELOPER: only assigned requests that are NOT in DRAFT status
+    // Architecture Decision: Developers must never see DRAFT requests, even if assigned
+    if (user.role === Role.DEVELOPER) {
+      if (request.assigneeId !== user.id || request.status === RequestStatus.DRAFT) {
+        throw new NotFoundError('Request not found');
+      }
     }
 
     return request;
@@ -288,9 +306,7 @@ export class RequestService {
       throw new BadRequestError('Only draft requests can be edited');
     }
 
-    const dataToUpdate: any = {
-      version: { increment: 1 },
-    };
+    const dataToUpdate: any = {};
 
     if (input.title !== undefined) dataToUpdate.title = input.title.trim();
     if (input.description !== undefined) dataToUpdate.description = input.description.trim();
@@ -300,9 +316,32 @@ export class RequestService {
       dataToUpdate.dueDate = input.dueDate ? new Date(input.dueDate) : null;
     }
 
-    const updated = await prisma.request.update({
+    // Optimistic locking: use expectedVersion if supplied, otherwise current version
+    const versionToMatch = input.expectedVersion !== undefined ? input.expectedVersion : request.version;
+
+    const updateResult = await prisma.request.updateMany({
+      where: {
+        id: requestId,
+        organizationId,
+        version: versionToMatch,
+        status: RequestStatus.DRAFT,
+        ownerId: user.id,
+      },
+      data: {
+        ...dataToUpdate,
+        version: { increment: 1 },
+      },
+    });
+
+    if (updateResult.count === 0) {
+      throw new ConflictError('Concurrent modification detected or version mismatch', {
+        expectedVersion: versionToMatch,
+        currentVersion: request.version,
+      });
+    }
+
+    const updated = await prisma.request.findUniqueOrThrow({
       where: { id: requestId },
-      data: dataToUpdate,
       include: {
         client: { select: { id: true, name: true } },
         owner: { select: { id: true, name: true, email: true } },
@@ -313,7 +352,12 @@ export class RequestService {
     return updated;
   }
 
-  async assignRequest(user: AuthenticatedUser, requestId: string, assigneeId: string) {
+  async assignRequest(
+    user: AuthenticatedUser,
+    requestId: string,
+    assigneeId: string,
+    expectedVersion?: number
+  ) {
     // Only MANAGER is authorized to assign requests
     if (user.role !== Role.MANAGER) {
       throw new ForbiddenError('Only managers can assign requests');
@@ -331,6 +375,24 @@ export class RequestService {
     // Enforce Rule #3: Cross-tenant request returns 404
     if (!request || request.organizationId !== organizationId) {
       throw new NotFoundError('Request not found');
+    }
+
+    // Assignment is only allowed when status is SUBMITTED, UNDER_REVIEW, APPROVED or IN_PROGRESS. Otherwise return 409.
+    const allowedAssignmentStatuses: RequestStatus[] = [
+      RequestStatus.SUBMITTED,
+      RequestStatus.UNDER_REVIEW,
+      RequestStatus.APPROVED,
+      RequestStatus.IN_PROGRESS,
+    ];
+
+    if (!allowedAssignmentStatuses.includes(request.status)) {
+      throw new ConflictError(
+        `Assignment is only allowed when status is SUBMITTED, UNDER_REVIEW, APPROVED, or IN_PROGRESS (current status: ${request.status})`,
+        {
+          currentStatus: request.status,
+          allowedStatuses: allowedAssignmentStatuses,
+        }
+      );
     }
 
     // Verify assignee: must be an active DEVELOPER in the SAME organization
@@ -354,12 +416,31 @@ export class RequestService {
       throw new BadRequestError('Assignee is deactivated');
     }
 
-    const updated = await prisma.request.update({
-      where: { id: requestId },
+    // Optimistic locking: use expectedVersion if supplied, otherwise current version
+    const versionToMatch = expectedVersion !== undefined ? expectedVersion : request.version;
+
+    const updateResult = await prisma.request.updateMany({
+      where: {
+        id: requestId,
+        organizationId,
+        version: versionToMatch,
+        status: { in: allowedAssignmentStatuses },
+      },
       data: {
         assigneeId: developer.id,
         version: { increment: 1 },
       },
+    });
+
+    if (updateResult.count === 0) {
+      throw new ConflictError('Concurrent modification detected or version mismatch', {
+        expectedVersion: versionToMatch,
+        currentVersion: request.version,
+      });
+    }
+
+    const updated = await prisma.request.findUniqueOrThrow({
+      where: { id: requestId },
       include: {
         client: { select: { id: true, name: true } },
         owner: { select: { id: true, name: true, email: true } },
@@ -379,6 +460,7 @@ export class RequestService {
         metadata: {
           assigneeId: developer.id,
           assigneeName: developer.name,
+          version: updated.version,
         },
       },
     });

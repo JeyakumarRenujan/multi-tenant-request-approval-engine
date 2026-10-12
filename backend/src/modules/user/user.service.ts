@@ -121,6 +121,16 @@ export class UserService {
       throw new NotFoundError('User not found');
     }
 
+    // ORG_ADMIN cannot deactivate or change the role of their own account
+    if (adminUser.id === userId) {
+      if (input.isActive !== undefined && input.isActive === false) {
+        throw new BadRequestError('Administrators cannot deactivate their own account');
+      }
+      if (input.role !== undefined && input.role !== adminUser.role) {
+        throw new BadRequestError('Administrators cannot change the role of their own account');
+      }
+    }
+
     // Cannot promote anyone to PLATFORM_ADMIN
     if ((input.role as any) === Role.PLATFORM_ADMIN) {
       throw new ForbiddenError('Cannot promote user to PLATFORM_ADMIN');
