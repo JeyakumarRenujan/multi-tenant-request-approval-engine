@@ -15,7 +15,18 @@ router.post('/logout', (req, res, next) => authController.logout(req, res, next)
 
 // GET /auth/me - Protected endpoint returning the authenticated user profile
 router.get('/me', authenticate, (req, res) => {
-  res.status(200).json({ user: req.user });
+  const profile = {
+    id: req.user!.id,
+    name: req.user!.name,
+    email: req.user!.email,
+    role: req.user!.role,
+    organizationId: req.user!.organizationId,
+    clientId: req.user!.clientId,
+  };
+  res.status(200).json({
+    user: profile,
+    ...profile,
+  });
 });
 
 export default router;

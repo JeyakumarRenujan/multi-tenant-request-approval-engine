@@ -139,6 +139,47 @@ describe('Auth Endpoints Integration Tests', () => {
     });
   });
 
+  describe('GET /auth/me', () => {
+    it('returns { id, name, email, role, organizationId, clientId } for the authenticated user and never includes passwordHash', async () => {
+      const loginRes = await request(app)
+        .post('/auth/login')
+        .send({ email: testEmail, password: rawPassword });
+
+      expect(loginRes.status).toBe(200);
+      const token = loginRes.body.accessToken;
+
+      const res = await request(app)
+        .get('/auth/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      // Verify profile properties are present
+      expect(res.body.id).toBe(testUserId);
+      expect(res.body.name).toBe('Test Auth User');
+      expect(res.body.email).toBe(testEmail);
+      expect(res.body.role).toBe(Role.ORG_ADMIN);
+      expect(res.body.organizationId).toBe(testOrgId);
+      expect(res.body.clientId).toBeNull();
+
+      expect(res.body.user.id).toBe(testUserId);
+      expect(res.body.user.name).toBe('Test Auth User');
+      expect(res.body.user.email).toBe(testEmail);
+      expect(res.body.user.role).toBe(Role.ORG_ADMIN);
+      expect(res.body.user.organizationId).toBe(testOrgId);
+      expect(res.body.user.clientId).toBeNull();
+
+      // Security requirement: never includes passwordHash
+      expect(res.body.passwordHash).toBeUndefined();
+      expect(res.body.user.passwordHash).toBeUndefined();
+    });
+
+    it('returns 401 when token is missing', async () => {
+      const res = await request(app).get('/auth/me');
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHORIZED');
+    });
+  });
+
   describe('Authentication & Inactive Account Enforcement (Requirement #4)', () => {
     it('blocks a user with isActive=false even if they present a still-valid access token', async () => {
       // 1. Authenticate to obtain a valid access token while user is active

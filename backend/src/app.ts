@@ -21,10 +21,16 @@ app.use(
   })
 );
 
-// Enable CORS restricted to frontend origin
+// Enable CORS restricted strictly to frontend origin
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: (origin, callback) => {
+      if (!origin || origin === config.frontendUrl) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
     credentials: true,
   })
 );

@@ -406,6 +406,99 @@ describe('Day 4 Part A: Dashboard Metrics, isOverdue Read-Time Logic, Swagger & 
       expect(byPriority.HIGH).toBe(0);
       expect(overdue).toBe(0);
     });
+
+    it('a MANAGER sees overdue = 1 for one overdue request, and overdue = 0 after it moves to COMPLETED', async () => {
+      // Setup isolated organization to cleanly test overdue = 1 -> overdue = 0
+      const timestamp = Date.now();
+      const dummyHash = await hashPassword('Password123!');
+      const isolatedOrg = await prisma.organization.create({ data: { name: `Iso Overdue Org ${timestamp}` } });
+      const isolatedClient = await prisma.client.create({ data: { name: 'Iso Client', organizationId: isolatedOrg.id } });
+
+      const isoMgr = await prisma.user.create({
+        data: {
+          email: `iso.mgr.${timestamp}@iso.com`,
+          passwordHash: dummyHash,
+          name: 'Iso Manager',
+          role: Role.MANAGER,
+          organizationId: isolatedOrg.id,
+        },
+      });
+      const isoMgrToken = generateAccessToken({
+        userId: isoMgr.id,
+        email: isoMgr.email,
+        role: Role.MANAGER,
+        organizationId: isolatedOrg.id,
+      });
+
+      const isoDev = await prisma.user.create({
+        data: {
+          email: `iso.dev.${timestamp}@iso.com`,
+          passwordHash: dummyHash,
+          name: 'Iso Dev',
+          role: Role.DEVELOPER,
+          organizationId: isolatedOrg.id,
+        },
+      });
+      const isoDevToken = generateAccessToken({
+        userId: isoDev.id,
+        email: isoDev.email,
+        role: Role.DEVELOPER,
+        organizationId: isolatedOrg.id,
+      });
+
+      // Single request with past due date in IN_PROGRESS status
+      const pastDue = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const req = await prisma.request.create({
+        data: {
+          title: 'Single Overdue Request',
+          description: 'Testing overdue transition from 1 to 0',
+          category: RequestCategory.FEATURE_REQUEST,
+          priority: RequestPriority.HIGH,
+          status: RequestStatus.IN_PROGRESS,
+          dueDate: pastDue,
+          organizationId: isolatedOrg.id,
+          clientId: isolatedClient.id,
+          ownerId: isoMgr.id,
+          assigneeId: isoDev.id,
+          version: 1,
+        },
+      });
+
+      // 1. Initial dashboard check: overdue must be exactly 1
+      const res1 = await request(app)
+        .get('/dashboard')
+        .set('Authorization', `Bearer ${isoMgrToken}`);
+
+      expect(res1.status).toBe(200);
+      expect(res1.body.overdue).toBe(1);
+
+      // 2. Transition request to COMPLETED
+      const completeRes = await request(app)
+        .post(`/requests/${req.id}/transition`)
+        .set('Authorization', `Bearer ${isoDevToken}`)
+        .send({
+          toStatus: RequestStatus.COMPLETED,
+          expectedVersion: 1,
+        });
+
+      expect(completeRes.status).toBe(200);
+      expect(completeRes.body.request.status).toBe(RequestStatus.COMPLETED);
+
+      // 3. Post-completion dashboard check: overdue must now be exactly 0
+      const res2 = await request(app)
+        .get('/dashboard')
+        .set('Authorization', `Bearer ${isoMgrToken}`);
+
+      expect(res2.status).toBe(200);
+      expect(res2.body.overdue).toBe(0);
+
+      // Teardown isolated test data
+      await prisma.activityLog.deleteMany({ where: { organizationId: isolatedOrg.id } });
+      await prisma.request.deleteMany({ where: { organizationId: isolatedOrg.id } });
+      await prisma.user.deleteMany({ where: { organizationId: isolatedOrg.id } });
+      await prisma.client.deleteMany({ where: { organizationId: isolatedOrg.id } });
+      await prisma.organization.deleteMany({ where: { id: isolatedOrg.id } });
+    });
   });
 
   describe('2. Read-Time Computed isOverdue Field', () => {
@@ -465,15 +558,26 @@ describe('Day 4 Part A: Dashboard Metrics, isOverdue Read-Time Logic, Swagger & 
       expect(res.headers['x-dns-prefetch-control']).toBe('off');
     });
 
-    it('handles CORS policy restricted to FRONTEND_URL', async () => {
+    it('strengthened CORS test: a request with Origin http://evil.example gets no Access-Control-Allow-Origin header, and the FRONTEND_URL origin does', async () => {
       const allowedOrigin = config.frontendUrl;
 
-      const res = await request(app)
+      // 1. Unauthorized origin gets no Access-Control-Allow-Origin header
+      const resEvil = await request(app)
+        .get('/health')
+        .set('Origin', 'http://evil.example');
+
+      expect(resEvil.status).toBe(200);
+      expect(resEvil.headers['access-control-allow-origin']).toBeUndefined();
+
+      // 2. Allowed FRONTEND_URL origin gets matching Access-Control-Allow-Origin header
+      const resAllowed = await request(app)
         .get('/health')
         .set('Origin', allowedOrigin);
 
-      expect(res.status).toBe(200);
-      expect(res.headers['access-control-allow-origin']).toBe(allowedOrigin);
+      expect(resAllowed.status).toBe(200);
+      expect(resAllowed.headers['access-control-allow-origin']).toBe(allowedOrigin);
+      expect(resAllowed.headers['access-control-allow-credentials']).toBe('true');
     });
   });
 });
+
