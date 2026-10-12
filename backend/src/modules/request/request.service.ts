@@ -544,6 +544,14 @@ export class RequestService {
       }
     }
 
+    // Optimistic locking: if current version does not match expectedVersion, return 409 CONFLICT
+    if (request.version !== input.expectedVersion) {
+      throw new ConflictError('Concurrent modification detected or version mismatch', {
+        expectedVersion: input.expectedVersion,
+        currentVersion: request.version,
+      });
+    }
+
     // State machine authorization and transition validation
     assertTransitionAllowed(
       request.status,
