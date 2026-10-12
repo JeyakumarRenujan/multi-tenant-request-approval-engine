@@ -46,3 +46,9 @@ export class ConflictError extends AppError {
   }
 }
 
+export class InvalidTransitionError extends AppError {
+  constructor(message = 'Invalid status transition', details?: any) {
+    super(409, 'INVALID_TRANSITION', message, details);
+  }
+}
+
