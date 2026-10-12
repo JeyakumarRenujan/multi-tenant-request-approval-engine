@@ -5,6 +5,7 @@ import { useAuth } from './context/useAuth';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { Layout } from './components/Layout';
 import { Login } from './pages/Login';
+import { Dashboard } from './pages/Dashboard';
 
 const HomeRedirect: React.FC = () => {
   const { user } = useAuth();
@@ -33,7 +34,7 @@ export function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/" element={<HomeRedirect />} />
-              <Route path="/dashboard" element={<PlaceholderPage title="Dashboard" />} />
+              <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/requests" element={<PlaceholderPage title="Requests" />} />
               <Route path="/requests/new" element={<PlaceholderPage title="New Request" />} />
               <Route path="/requests/:id" element={<PlaceholderPage title="Request Detail" />} />
