@@ -50,6 +50,16 @@ export class RequestController {
       next(error);
     }
   }
+
+  async transition(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params.id as string;
+      const request = await requestService.transitionRequest(req.user!, id, req.body);
+      res.status(200).json({ request });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const requestController = new RequestController();

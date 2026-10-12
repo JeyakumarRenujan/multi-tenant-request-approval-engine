@@ -10,8 +10,11 @@ import {
 import {
   CreateRequestInput,
   UpdateRequestInput,
+  AssignRequestInput,
+  TransitionRequestInput,
   RequestQueryInput,
 } from './request.schema';
+import { assertTransitionAllowed } from './request.stateMachine';
 
 export class RequestService {
   /**
@@ -488,6 +491,111 @@ export class RequestService {
             assigneeId: developer.id,
             assigneeName: developer.name,
             version: versionToMatch + 1,
+          },
+        },
+      });
+
+      return tx.request.findUniqueOrThrow({
+        where: { id: requestId },
+        include: {
+          client: { select: { id: true, name: true } },
+          owner: { select: { id: true, name: true, email: true } },
+          assignee: { select: { id: true, name: true, email: true } },
+        },
+      });
+    });
+
+    return updated;
+  }
+
+  async transitionRequest(
+    user: AuthenticatedUser,
+    requestId: string,
+    input: TransitionRequestInput
+  ) {
+    if (user.role === Role.PLATFORM_ADMIN) {
+      throw new ForbiddenError('Platform administrators cannot access tenant requests');
+    }
+
+    const organizationId = user.organizationId;
+    if (!organizationId) {
+      throw new NotFoundError('Organization not found');
+    }
+
+    const request = await prisma.request.findUnique({
+      where: { id: requestId },
+    });
+
+    // Enforce Rule #3: Cross-tenant access returns 404 to prevent ID enumeration
+    if (!request || request.organizationId !== organizationId) {
+      throw new NotFoundError('Request not found');
+    }
+
+    // Role-based visibility check: user must have visibility into this request
+    // CLIENT_USER: only requests belonging to their clientId
+    if (user.role === Role.CLIENT_USER && request.clientId !== user.clientId) {
+      throw new NotFoundError('Request not found');
+    }
+
+    // DEVELOPER: only assigned requests that are not in DRAFT
+    if (user.role === Role.DEVELOPER) {
+      if (request.assigneeId !== user.id || request.status === RequestStatus.DRAFT) {
+        throw new NotFoundError('Request not found');
+      }
+    }
+
+    // State machine authorization and transition validation
+    assertTransitionAllowed(
+      request.status,
+      input.toStatus,
+      user,
+      request,
+      input.reason ?? undefined
+    );
+
+    const trimmedReason = input.reason?.trim() || null;
+
+    // Concurrency control: inside ONE prisma.$transaction, run updateMany WHERE id, organizationId,
+    // version = expectedVersion AND status = current status. If count is 0, return 409 CONFLICT.
+    const updated = await prisma.$transaction(async (tx) => {
+      const updateData: Prisma.RequestUpdateManyMutationInput = {
+        status: input.toStatus,
+        version: { increment: 1 },
+      };
+
+      if (input.toStatus === RequestStatus.REJECTED && trimmedReason) {
+        updateData.rejectionReason = trimmedReason;
+      }
+
+      const updateResult = await tx.request.updateMany({
+        where: {
+          id: requestId,
+          organizationId,
+          version: input.expectedVersion,
+          status: request.status,
+        },
+        data: updateData,
+      });
+
+      if (updateResult.count === 0) {
+        throw new ConflictError('Concurrent modification detected or version mismatch', {
+          expectedVersion: input.expectedVersion,
+          currentVersion: request.version,
+        });
+      }
+
+      // Record ActivityLog row with event STATUS_CHANGED inside the same transaction
+      await tx.activityLog.create({
+        data: {
+          organizationId,
+          requestId: request.id,
+          actorId: user.id,
+          event: 'STATUS_CHANGED',
+          previousStatus: request.status,
+          newStatus: input.toStatus,
+          metadata: {
+            reason: trimmedReason,
+            version: input.expectedVersion + 1,
           },
         },
       });

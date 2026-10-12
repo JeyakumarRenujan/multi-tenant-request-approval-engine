@@ -32,6 +32,24 @@ export const assignRequestSchema = z.object({
   expectedVersion: z.number().int().positive().optional(),
 });
 
+export const transitionRequestSchema = z
+  .object({
+    toStatus: z.nativeEnum(RequestStatus, {
+      message: 'Invalid request status',
+    }),
+    expectedVersion: z.number().int().positive(),
+    reason: z.string().optional().nullable(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.toStatus === RequestStatus.REJECTED && (!data.reason || data.reason.trim().length === 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reason'],
+        message: 'Reason is required when rejecting a request',
+      });
+    }
+  });
+
 export const requestQuerySchema = z.object({
   status: z.nativeEnum(RequestStatus).optional(),
   priority: z.nativeEnum(RequestPriority).optional(),
@@ -65,4 +83,5 @@ export const requestParamsSchema = z.object({
 export type CreateRequestInput = z.infer<typeof createRequestSchema>;
 export type UpdateRequestInput = z.infer<typeof updateRequestSchema>;
 export type AssignRequestInput = z.infer<typeof assignRequestSchema>;
+export type TransitionRequestInput = z.infer<typeof transitionRequestSchema>;
 export type RequestQueryInput = z.infer<typeof requestQuerySchema>;

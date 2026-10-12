@@ -7,6 +7,7 @@ import {
   createRequestSchema,
   updateRequestSchema,
   assignRequestSchema,
+  transitionRequestSchema,
   requestQuerySchema,
   requestParamsSchema,
 } from './request.schema';
@@ -55,6 +56,13 @@ router.patch(
   authorize(Role.MANAGER),
   validate({ params: requestParamsSchema, body: assignRequestSchema }),
   (req, res, next) => requestController.assign(req, res, next)
+);
+
+// POST /requests/:id/transition - Transition workflow status (role-checked via state machine)
+router.post(
+  '/:id/transition',
+  validate({ params: requestParamsSchema, body: transitionRequestSchema }),
+  (req, res, next) => requestController.transition(req, res, next)
 );
 
 export default router;
